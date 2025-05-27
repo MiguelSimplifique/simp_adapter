@@ -6,7 +6,7 @@ const app = express();
 app.use(express.json());
 
 // Configurações
-const SIMPLIFIQUE_BASE_URL = 'https://app.simplifique.ai/pt/chatbot/api/v1';
+const SIMPLIFIQUE_BASE_URL = 'https://app.simplifique.ai/en/chatbot/api/v1'; // Corrigido: era /pt/, agora /en/
 const PORT = process.env.PORT || 3000;
 
 // Middleware para logging (opcional)
@@ -17,6 +17,10 @@ app.use((req, res, next) => {
 
 // Endpoint principal que emula OpenAI Chat Completions
 app.post('/v1/chat/completions', async (req, res) => {
+  console.log('\n=== Nova requisição recebida ===');
+  console.log('Headers:', JSON.stringify(req.headers, null, 2));
+  console.log('Body:', JSON.stringify(req.body, null, 2));
+  
   try {
     const openaiRequest = req.body;
     
@@ -24,6 +28,7 @@ app.post('/v1/chat/completions', async (req, res) => {
     // Formato esperado: "Bearer TOKEN:UUID"
     const authHeader = req.headers.authorization;
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      console.error('Authorization header inválido ou ausente');
       return res.status(401).json({
         error: {
           message: 'Authorization header missing or invalid',
@@ -36,11 +41,18 @@ app.post('/v1/chat/completions', async (req, res) => {
     const authData = authHeader.replace('Bearer ', '').trim();
     const [apiToken, chatbotUuid] = authData.split(':');
     
-    if (!apiToken || !chatbotUuid) {
-      return res.status(401).json({
+    console.log('Token extraído:', apiToken ? `${apiToken.substring(0, 10)}...` : 'VAZIO');
+    console.log('UUID extraído:', chatbotUuid || 'VAZIO');
+    
+    // Validar formato UUID (básico)
+    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    if (!uuidRegex.test(chatbotUuid)) {
+      console.error('UUID inválido:', chatbotUuid);
+      return res.status(400).json({
         error: {
-          message: 'Token and UUID must be provided in format: Bearer TOKEN:UUID',
-          type: 'authentication_error'
+          message: 'Invalid chatbot UUID format',
+          type: 'invalid_request_error',
+          details: `UUID deve estar no formato: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`
         }
       });
     }
@@ -108,27 +120,30 @@ app.post('/v1/chat/completions', async (req, res) => {
       ...(customSystemPrompt && { custom_base_system_prompt: customSystemPrompt })
     };
     
-    console.log('Calling Simplifique.ai with:', {
-      url: `${SIMPLIFIQUE_BASE_URL}/message/`,
-      chatbot_uuid: chatbotUuid,
-      query: simplifiqueRequest.query.substring(0, 50) + '...',
-      has_system_prompt: !!customSystemPrompt
-    });
+    console.log('\n=== Enviando para Simplifique.ai ===');
+    console.log('URL:', `${SIMPLIFIQUE_BASE_URL}/message/`);
+    console.log('Payload:', JSON.stringify(simplifiqueRequest, null, 2));
     
     // Chamar API da Simplifique.ai
-    const simplifiqueResponse = await axios.post(
-      `${SIMPLIFIQUE_BASE_URL}/message/`,
-      simplifiqueRequest,
-      {
-        headers: {
-          'Authorization': `Token ${apiToken}`,
-          'Content-Type': 'application/json',
-          'Accept': 'application/json'
+    try {
+      const simplifiqueResponse = await axios.post(
+        `${SIMPLIFIQUE_BASE_URL}/message/`,
+        simplifiqueRequest,
+        {
+          headers: {
+            'Authorization': `Token ${apiToken}`, // Formato correto: "Token" não "Bearer"
+            'Content-Type': 'application/json',
+            'Accept': 'application/json'
+          },
+          timeout: 30000 // 30 segundos de timeout
         }
-      }
-    );
-    
-    const simplifiqueData = simplifiqueResponse.data;
+      );
+      
+      console.log('\n=== Resposta da Simplifique.ai ===');
+      console.log('Status:', simplifiqueResponse.status);
+      console.log('Data:', JSON.stringify(simplifiqueResponse.data, null, 2));
+      
+      const simplifiqueData = simplifiqueResponse.data;
     
     // Traduzir resposta para formato OpenAI
     const openaiResponse = {
@@ -204,6 +219,20 @@ app.get('/health', (req, res) => {
   res.json({
     status: 'ok',
     service: 'Simplifique.ai OpenAI Proxy',
+    timestamp: new Date().toISOString(),
+    environment: {
+      node_env: process.env.NODE_ENV || 'not set',
+      port: PORT,
+      simplifique_url: SIMPLIFIQUE_BASE_URL
+    }
+  });
+});
+
+// Endpoint de debug (remover em produção)
+app.get('/debug/test', (req, res) => {
+  res.json({
+    message: 'Debug endpoint working',
+    headers: req.headers,
     timestamp: new Date().toISOString()
   });
 });
