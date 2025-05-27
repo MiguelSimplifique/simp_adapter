@@ -25,14 +25,17 @@ app.post('/v1/chat/completions', async (req, res) => {
     const openaiRequest = req.body;
     
     // Extrair token e UUID do cabeçalho Authorization
-    // Formato esperado: "Bearer TOKEN:UUID"
+    // n8n envia automaticamente: "Bearer API_KEY"
     const authHeader = req.headers.authorization;
+    console.log('Authorization header recebido:', authHeader);
+    
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
       console.error('Authorization header inválido ou ausente');
       return res.status(401).json({
         error: {
           message: 'Authorization header missing or invalid',
-          type: 'authentication_error'
+          type: 'authentication_error',
+          details: 'Expected format: Bearer TOKEN:UUID'
         }
       });
     }
@@ -62,63 +65,77 @@ app.post('/v1/chat/completions', async (req, res) => {
     
     // Verificar se as mensagens vêm como string única (formato n8n)
     if (messages.length === 1 && typeof messages[0] === 'string') {
-      // Parse do formato n8n: "System: ... Human: ..."
+      // Parse do formato n8n
       const messageString = messages[0];
-      const parsedMessages = [];
       
-      // Extrair System message
-      const systemMatch = messageString.match(/System:\s*([\s\S]*?)(?=Human:|$)/);
+      // Extrair System message para custom_base_system_prompt
+      const systemMatch = messageString.match(/System:\s*([\s\S]*?)(?=Contexto Extra|$)/);
       if (systemMatch) {
-        parsedMessages.push({
-          role: 'system',
-          content: systemMatch[1].trim()
-        });
+        customSystemPrompt = systemMatch[1].trim();
+        console.log('System prompt extraído do formato string');
       }
       
-      // Extrair Human/User message
-      const humanMatch = messageString.match(/Human:\s*([\s\S]*?)$/);
-      if (humanMatch) {
-        parsedMessages.push({
-          role: 'user',
-          content: humanMatch[1].trim()
-        });
+      // Extrair seção "Contexto Extra Human:"
+      const contextoMatch = messageString.match(/Contexto Extra\s*Human:\s*([\s\S]*?)$/);
+      if (contextoMatch) {
+        const contextoContent = contextoMatch[1].trim();
+        
+        // Extrair Query
+        const queryMatch = contextoContent.match(/Query:\s*([\s\S]*?)(?=user_key:|$)/);
+        if (queryMatch) {
+          userQuery = queryMatch[1].trim();
+        }
+        
+        // Extrair user_key
+        const userKeyMatch = contextoContent.match(/user_key:\s*(.+?)$/);
+        if (userKeyMatch) {
+          userKey = userKeyMatch[1].trim();
+        }
       }
       
-      messages = parsedMessages;
-    }
+      // Fallback: se não encontrou no formato esperado, tenta o formato antigo
+      if (!userQuery) {
+        const humanMatch = messageString.match(/Human:\s*([\s\S]*?)$/);
+        if (humanMatch) {
+          userQuery = humanMatch[1].trim();
+        }
+      }
+    } else {
     
-    // Validar se há mensagens
-    const lastMessage = messages[messages.length - 1];
-    if (!lastMessage || !lastMessage.content) {
-      console.error('Invalid message format:', openaiRequest.messages);
+    // Validar se há uma query
+    if (!userQuery) {
+      console.error('No user query found in messages:', openaiRequest.messages);
       return res.status(400).json({
         error: {
-          message: 'No valid message content found',
+          message: 'No user message found',
           type: 'invalid_request_error',
-          details: 'Messages must be in OpenAI format or n8n string format'
+          details: 'A user message (Query: or role: user) is required'
         }
       });
     }
     
-    // Gerar user_key único para cada sessão (pode ser customizado)
-    const userKey = openaiRequest.user || `n8n-user-${Date.now()}`;
-    
-    // Extrair e traduzir System Message para custom_base_system_prompt
-    let customSystemPrompt = '';
-    const systemMessage = messages.find(msg => msg.role === 'system');
-    if (systemMessage && systemMessage.content) {
-      customSystemPrompt = systemMessage.content;
-      console.log('System Message detectada, será enviada como custom_base_system_prompt');
+    // Determinar user_key com fallback
+    // Prioridade: 1) UserKey na mensagem, 2) user no request, 3) header customizado, 4) gerar único
+    if (!userKey) {
+      userKey = openaiRequest.user || 
+                req.headers['x-user-key'] || 
+                req.headers['x-user-id'] ||
+                `n8n-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
     }
     
-    // Preparar payload para Simplifique.ai
+    console.log('User Key:', userKey);
+    
+    // Preparar payload para Simplifique.ai conforme documentação
     const simplifiqueRequest = {
       chatbot_uuid: chatbotUuid,
-      query: lastMessage.content,
-      user_key: userKey,
-      // Incluir custom_base_system_prompt se houver System Message
-      ...(customSystemPrompt && { custom_base_system_prompt: customSystemPrompt })
+      query: userQuery,
+      user_key: userKey
     };
+    
+    // Adicionar custom_base_system_prompt apenas se existir e não estiver vazio
+    if (customSystemPrompt && customSystemPrompt.trim()) {
+      simplifiqueRequest.custom_base_system_prompt = customSystemPrompt;
+    }
     
     console.log('\n=== Enviando para Simplifique.ai ===');
     console.log('URL:', `${SIMPLIFIQUE_BASE_URL}/message/`);
@@ -144,39 +161,53 @@ app.post('/v1/chat/completions', async (req, res) => {
       console.log('Data:', JSON.stringify(simplifiqueResponse.data, null, 2));
       
       const simplifiqueData = simplifiqueResponse.data;
-    
-    // Traduzir resposta para formato OpenAI
-    const openaiResponse = {
-      id: `chatcmpl-${uuidv4()}`,
-      object: 'chat.completion',
-      created: Math.floor(Date.now() / 1000),
-      model: openaiRequest.model || 'gpt-3.5-turbo',
-      system_fingerprint: `simplifique_${chatbotUuid}`,
-      choices: [{
-        index: 0,
-        message: {
-          role: 'assistant',
-          content: simplifiqueData.data.answer
+      
+      // Traduzir resposta para formato OpenAI
+      const openaiResponse = {
+        id: `chatcmpl-${uuidv4()}`,
+        object: 'chat.completion',
+        created: Math.floor(Date.now() / 1000),
+        model: openaiRequest.model || 'gpt-3.5-turbo',
+        system_fingerprint: `simplifique_${chatbotUuid}`,
+        choices: [{
+          index: 0,
+          message: {
+            role: 'assistant',
+            content: simplifiqueData.data.answer
+          },
+          logprobs: null,
+          finish_reason: 'stop'
+        }],
+        usage: {
+          prompt_tokens: Math.ceil(lastMessage.content.length / 4),
+          completion_tokens: Math.ceil(simplifiqueData.data.answer.length / 4),
+          total_tokens: Math.ceil((lastMessage.content.length + simplifiqueData.data.answer.length) / 4)
         },
-        logprobs: null,
-        finish_reason: 'stop'
-      }],
-      usage: {
-        prompt_tokens: Math.ceil(lastMessage.content.length / 4),
-        completion_tokens: Math.ceil(simplifiqueData.data.answer.length / 4),
-        total_tokens: Math.ceil((lastMessage.content.length + simplifiqueData.data.answer.length) / 4)
-      },
-      // Metadados adicionais da Simplifique
-      metadata: {
-        simplifique_chat_id: simplifiqueData.data.chat_id,
-        service: 'simplifique.ai'
-      }
-    };
-    
-    res.json(openaiResponse);
+        // Metadados adicionais da Simplifique
+        metadata: {
+          simplifique_chat_id: simplifiqueData.data.chat_id,
+          service: 'simplifique.ai'
+        }
+      };
+      
+      res.json(openaiResponse);
+      console.log('\n=== Resposta enviada para n8n ===');
+      console.log('Success!');
+      
+    } catch (axiosError) {
+      console.error('\n=== Erro ao chamar Simplifique.ai ===');
+      console.error('Erro completo:', axiosError.response?.data || axiosError.message);
+      console.error('Status:', axiosError.response?.status);
+      console.error('Headers:', axiosError.response?.headers);
+      
+      throw axiosError; // Re-throw para o tratamento geral
+    }
     
   } catch (error) {
-    console.error('Proxy error:', error.response?.data || error.message);
+    console.error('\n=== Erro no proxy ===');
+    console.error('Tipo:', error.name);
+    console.error('Mensagem:', error.message);
+    console.error('Stack:', error.stack);
     
     // Tratamento de erros específicos da Simplifique.ai
     if (error.response) {
