@@ -3,16 +3,19 @@ const axios = require('axios');
 const { v4: uuidv4 } = require('uuid');
 
 const app = express();
-app.use(express.json());
-
-// Configurações
 const SIMPLIFIQUE_BASE_URL = 'https://app.simplifique.ai/en/chatbot/api/v1';
 const PORT = process.env.PORT || 3000;
 
+// 1️⃣ Logging sempre antes!
 app.use((req, res, next) => {
-  console.log(`${new Date().toISOString()} - ${req.method} ${req.path}`);
+  console.log(`${new Date().toISOString()} - ${req.method} ${req.originalUrl}`);
   next();
 });
+
+// 2️⃣ Parsing do JSON
+app.use(express.json());
+
+// 3️⃣ Rotas principais
 
 app.post('/v1/chat/completions', async (req, res) => {
   console.log('\n=== Nova requisição recebida ===');
@@ -53,6 +56,7 @@ app.post('/v1/chat/completions', async (req, res) => {
     let userKey = '';
     let lastMessage = null;
 
+    // Compatível com formato string (n8n) e OpenAI
     if (messages.length === 1 && typeof messages[0] === 'string') {
       const messageString = messages[0];
       const systemMatch = messageString.match(/System:\s*([\s\S]*?)(?=Contexto Extra|$)/);
@@ -207,6 +211,7 @@ app.post('/v1/chat/completions', async (req, res) => {
   }
 });
 
+// Endpoint health
 app.get('/health', (req, res) => {
   res.json({
     status: 'ok',
@@ -220,6 +225,7 @@ app.get('/health', (req, res) => {
   });
 });
 
+// Endpoint debug
 app.get('/debug/test', (req, res) => {
   res.json({
     message: 'Debug endpoint working',
@@ -228,6 +234,7 @@ app.get('/debug/test', (req, res) => {
   });
 });
 
+// Endpoint modelos compatível OpenAI
 app.get('/v1/models', (req, res) => {
   res.json({
     data: [
@@ -241,6 +248,7 @@ app.get('/v1/models', (req, res) => {
   });
 });
 
+// Start server
 app.listen(PORT, () => {
   console.log(`Simplifique.ai OpenAI Proxy rodando na porta ${PORT}`);
   console.log(`Health check disponível em: http://localhost:${PORT}/health`);
@@ -250,4 +258,5 @@ process.on('SIGTERM', () => {
   console.log('SIGTERM recebido, encerrando servidor...');
   process.exit(0);
 });
+
 
