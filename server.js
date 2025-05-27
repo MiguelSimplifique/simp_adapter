@@ -45,15 +45,45 @@ app.post('/v1/chat/completions', async (req, res) => {
       });
     }
     
-    // Extrair a mensagem do formato OpenAI
-    const messages = openaiRequest.messages || [];
-    const lastMessage = messages[messages.length - 1];
+    // Extrair e processar mensagens do formato OpenAI
+    let messages = openaiRequest.messages || [];
     
+    // Verificar se as mensagens vêm como string única (formato n8n)
+    if (messages.length === 1 && typeof messages[0] === 'string') {
+      // Parse do formato n8n: "System: ... Human: ..."
+      const messageString = messages[0];
+      const parsedMessages = [];
+      
+      // Extrair System message
+      const systemMatch = messageString.match(/System:\s*([\s\S]*?)(?=Human:|$)/);
+      if (systemMatch) {
+        parsedMessages.push({
+          role: 'system',
+          content: systemMatch[1].trim()
+        });
+      }
+      
+      // Extrair Human/User message
+      const humanMatch = messageString.match(/Human:\s*([\s\S]*?)$/);
+      if (humanMatch) {
+        parsedMessages.push({
+          role: 'user',
+          content: humanMatch[1].trim()
+        });
+      }
+      
+      messages = parsedMessages;
+    }
+    
+    // Validar se há mensagens
+    const lastMessage = messages[messages.length - 1];
     if (!lastMessage || !lastMessage.content) {
+      console.error('Invalid message format:', openaiRequest.messages);
       return res.status(400).json({
         error: {
-          message: 'No message content found',
-          type: 'invalid_request_error'
+          message: 'No valid message content found',
+          type: 'invalid_request_error',
+          details: 'Messages must be in OpenAI format or n8n string format'
         }
       });
     }
@@ -81,7 +111,8 @@ app.post('/v1/chat/completions', async (req, res) => {
     console.log('Calling Simplifique.ai with:', {
       url: `${SIMPLIFIQUE_BASE_URL}/message/`,
       chatbot_uuid: chatbotUuid,
-      query: simplifiqueRequest.query.substring(0, 50) + '...'
+      query: simplifiqueRequest.query.substring(0, 50) + '...',
+      has_system_prompt: !!customSystemPrompt
     });
     
     // Chamar API da Simplifique.ai
