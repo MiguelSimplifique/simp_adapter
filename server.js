@@ -6,7 +6,7 @@ const app = express();
 const SIMPLIFIQUE_BASE_URL = 'https://app.simplifique.ai/pt/chatbot/api/v1';
 const PORT = process.env.PORT || 3000;
 
-// 1️⃣ Logging middleware sempre antes
+// 1️⃣ Logging middleware
 app.use((req, res, next) => {
   console.log(`${new Date().toISOString()} - ${req.method} ${req.originalUrl}`);
   next();
@@ -70,14 +70,14 @@ app.post('/v1/chat/completions', async (req, res) => {
       if (contextoMatch) {
         const contextoContent = contextoMatch[1].trim();
 
-        // Extrair Query (apenas até a primeira quebra de linha após "Query:")
-        const queryMatch = contextoContent.match(/Query:\s*([^\n\r]*)/);
+        // Extrair Query entre Query: e user_key:
+        const queryMatch = contextoContent.match(/Query:\s*([\s\S]*?)\s*user_key:/i);
         if (queryMatch) {
           userQuery = queryMatch[1].trim();
         }
 
         // Extrair user_key
-        const userKeyMatch = contextoContent.match(/user_key:\s*([^\n\r]*)/);
+        const userKeyMatch = contextoContent.match(/user_key:\s*([^\n\r]*)/i);
         if (userKeyMatch) {
           userKey = userKeyMatch[1].trim();
         }
@@ -220,7 +220,7 @@ app.post('/v1/chat/completions', async (req, res) => {
   }
 });
 
-// 4️⃣ Health check
+// Health check
 app.get('/health', (req, res) => {
   res.json({
     status: 'ok',
@@ -234,7 +234,7 @@ app.get('/health', (req, res) => {
   });
 });
 
-// 5️⃣ Debug endpoint (opcional)
+// Debug endpoint (opcional)
 app.get('/debug/test', (req, res) => {
   res.json({
     message: 'Debug endpoint working',
@@ -243,7 +243,7 @@ app.get('/debug/test', (req, res) => {
   });
 });
 
-// 6️⃣ List models (OpenAI compat)
+// List models (OpenAI compat)
 app.get('/v1/models', (req, res) => {
   res.json({
     data: [
@@ -257,17 +257,15 @@ app.get('/v1/models', (req, res) => {
   });
 });
 
-// 7️⃣ Start server
+// Start server
 app.listen(PORT, () => {
   console.log(`Simplifique.ai OpenAI Proxy rodando na porta ${PORT}`);
   console.log(`Health check disponível em: http://localhost:${PORT}/health`);
 });
 
-// 8️⃣ Graceful shutdown
+// Graceful shutdown
 process.on('SIGTERM', () => {
   console.log('SIGTERM recebido, encerrando servidor...');
   process.exit(0);
 });
-
-
 
