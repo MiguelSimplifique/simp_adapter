@@ -61,11 +61,12 @@ app.post('/v1/chat/completions', async (req, res) => {
     // Gerar user_key único para cada sessão (pode ser customizado)
     const userKey = openaiRequest.user || `n8n-user-${Date.now()}`;
     
-    // Construir system prompt se houver
+    // Extrair e traduzir System Message para custom_base_system_prompt
     let customSystemPrompt = '';
     const systemMessage = messages.find(msg => msg.role === 'system');
-    if (systemMessage) {
+    if (systemMessage && systemMessage.content) {
       customSystemPrompt = systemMessage.content;
+      console.log('System Message detectada, será enviada como custom_base_system_prompt');
     }
     
     // Preparar payload para Simplifique.ai
@@ -73,6 +74,7 @@ app.post('/v1/chat/completions', async (req, res) => {
       chatbot_uuid: chatbotUuid,
       query: lastMessage.content,
       user_key: userKey,
+      // Incluir custom_base_system_prompt se houver System Message
       ...(customSystemPrompt && { custom_base_system_prompt: customSystemPrompt })
     };
     
