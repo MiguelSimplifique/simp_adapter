@@ -3,20 +3,19 @@ const axios = require('axios');
 const { v4: uuidv4 } = require('uuid');
 
 const app = express();
-const SIMPLIFIQUE_BASE_URL = 'https://app.simplifique.ai/en/chatbot/api/v1';
+const SIMPLIFIQUE_BASE_URL = 'https://app.simplifique.ai/pt/chatbot/api/v1';
 const PORT = process.env.PORT || 3000;
 
-// 1️⃣ Logging sempre antes!
+// 1️⃣ Logging middleware sempre antes
 app.use((req, res, next) => {
   console.log(`${new Date().toISOString()} - ${req.method} ${req.originalUrl}`);
   next();
 });
 
-// 2️⃣ Parsing do JSON
+// 2️⃣ Middleware para parsing de JSON
 app.use(express.json());
 
-// 3️⃣ Rotas principais
-
+// 3️⃣ Endpoint principal
 app.post('/v1/chat/completions', async (req, res) => {
   console.log('\n=== Nova requisição recebida ===');
   console.log('Headers:', JSON.stringify(req.headers, null, 2));
@@ -59,26 +58,34 @@ app.post('/v1/chat/completions', async (req, res) => {
     // Compatível com formato string (n8n) e OpenAI
     if (messages.length === 1 && typeof messages[0] === 'string') {
       const messageString = messages[0];
+
+      // Extrair System Prompt
       const systemMatch = messageString.match(/System:\s*([\s\S]*?)(?=Contexto Extra|$)/);
       if (systemMatch) {
         customSystemPrompt = systemMatch[1].trim();
       }
 
+      // Extrair seção "Contexto Extra Human:"
       const contextoMatch = messageString.match(/Contexto Extra\s*Human:\s*([\s\S]*?)$/);
       if (contextoMatch) {
         const contextoContent = contextoMatch[1].trim();
-        const queryMatch = contextoContent.match(/Query:\s*([\s\S]*?)(?=user_key:|$)/);
+
+        // Extrair Query (apenas até a primeira quebra de linha após "Query:")
+        const queryMatch = contextoContent.match(/Query:\s*([^\n\r]*)/);
         if (queryMatch) {
           userQuery = queryMatch[1].trim();
         }
-        const userKeyMatch = contextoContent.match(/user_key:\s*(.+?)$/);
+
+        // Extrair user_key
+        const userKeyMatch = contextoContent.match(/user_key:\s*([^\n\r]*)/);
         if (userKeyMatch) {
           userKey = userKeyMatch[1].trim();
         }
       }
 
+      // Fallback para Human (caso não encontre no contexto extra)
       if (!userQuery) {
-        const humanMatch = messageString.match(/Human:\s*([\s\S]*?)$/);
+        const humanMatch = messageString.match(/Human:\s*([^\n\r]*)/);
         if (humanMatch) {
           userQuery = humanMatch[1].trim();
         }
@@ -94,6 +101,7 @@ app.post('/v1/chat/completions', async (req, res) => {
       }
     }
 
+    // Checagem obrigatória da query
     if (!userQuery) {
       return res.status(400).json({
         error: {
@@ -104,6 +112,7 @@ app.post('/v1/chat/completions', async (req, res) => {
       });
     }
 
+    // Checagem obrigatória do user_key (pode usar fallback de headers ou gerar)
     if (!userKey) {
       userKey = openaiRequest.user ||
                 req.headers['x-user-key'] ||
@@ -211,7 +220,7 @@ app.post('/v1/chat/completions', async (req, res) => {
   }
 });
 
-// Endpoint health
+// 4️⃣ Health check
 app.get('/health', (req, res) => {
   res.json({
     status: 'ok',
@@ -225,7 +234,7 @@ app.get('/health', (req, res) => {
   });
 });
 
-// Endpoint debug
+// 5️⃣ Debug endpoint (opcional)
 app.get('/debug/test', (req, res) => {
   res.json({
     message: 'Debug endpoint working',
@@ -234,7 +243,7 @@ app.get('/debug/test', (req, res) => {
   });
 });
 
-// Endpoint modelos compatível OpenAI
+// 6️⃣ List models (OpenAI compat)
 app.get('/v1/models', (req, res) => {
   res.json({
     data: [
@@ -248,15 +257,17 @@ app.get('/v1/models', (req, res) => {
   });
 });
 
-// Start server
+// 7️⃣ Start server
 app.listen(PORT, () => {
   console.log(`Simplifique.ai OpenAI Proxy rodando na porta ${PORT}`);
   console.log(`Health check disponível em: http://localhost:${PORT}/health`);
 });
 
+// 8️⃣ Graceful shutdown
 process.on('SIGTERM', () => {
   console.log('SIGTERM recebido, encerrando servidor...');
   process.exit(0);
 });
+
 
 
