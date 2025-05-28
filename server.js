@@ -27,6 +27,8 @@ app.post('/v1/chat/completions', async (req, res) => {
   let userKey = '';
   let customSystemPrompt = '';
   let lastMessage = null;
+  let simplifiqueData = undefined;
+  let promptTokens = 0, completionTokens = 0, totalTokens = 0;
 
   try {
     // Auth header parsing
@@ -111,7 +113,6 @@ app.post('/v1/chat/completions', async (req, res) => {
     console.log('Payload:', JSON.stringify(simplifiqueRequest, null, 2));
 
     // Chama Simplifique
-    let simplifiqueData;
     try {
       const simplifiqueResponse = await axios.post(
         `${SIMPLIFIQUE_BASE_URL}/message/`,
@@ -134,48 +135,58 @@ app.post('/v1/chat/completions', async (req, res) => {
           chat_id: null
         }
       };
+      console.error('\n=== Erro ao chamar Simplifique.ai ===');
+      console.error(err.response?.data || err.message);
     }
 
     // Garante tokens estimados (safe fallback)
-    const promptTokens = lastMessage?.content
+    promptTokens = lastMessage?.content
       ? Math.ceil(lastMessage.content.length / 4)
       : Math.ceil(userQuery.length / 4);
-    const completionTokens = simplifiqueData?.data?.answer
-      ? Math.ceil(simplifiqueData.data.answer.length / 4)
+    completionTokens = simplifiqueData?.data?.answer
+      ? Math.ceil(String(simplifiqueData.data.answer).length / 4)
       : 0;
-    const totalTokens = promptTokens + completionTokens;
+    totalTokens = promptTokens + completionTokens;
 
-    // Resposta no formato OpenAI
+    // Resposta no formato OpenAI (garante existence do message.content)
     const openaiResponse = {
       id: `chatcmpl-${uuidv4()}`,
       object: 'chat.completion',
       created: Math.floor(Date.now() / 1000),
-      model: openaiRequest.model || 'gpt-3.5-turbo',
+      model: openaiRequest?.model || 'gpt-3.5-turbo',
       system_fingerprint: `simplifique_${chatbotUuid}`,
       choices: [{
         index: 0,
         message: {
           role: 'assistant',
-          content: simplifiqueData?.data?.answer || 'Desculpe, não consegui obter uma resposta no momento.'
+          content: (simplifiqueData && simplifiqueData.data && simplifiqueData.data.answer)
+            ? String(simplifiqueData.data.answer)
+            : 'Desculpe, não consegui obter uma resposta no momento.'
         },
         logprobs: null,
         finish_reason: 'stop'
       }],
       usage: {
-        prompt_tokens: promptTokens,
-        completion_tokens: completionTokens,
-        total_tokens: totalTokens
+        prompt_tokens: promptTokens || 0,
+        completion_tokens: completionTokens || 0,
+        total_tokens: totalTokens || 0
       },
       metadata: {
-        simplifique_chat_id: simplifiqueData?.data?.chat_id,
+        simplifique_chat_id: (simplifiqueData && simplifiqueData.data && simplifiqueData.data.chat_id) || null,
         service: 'simplifique.ai'
       }
     };
+
+    console.log('\n=== Resposta enviada para n8n ===');
+    console.log(JSON.stringify(openaiResponse, null, 2));
 
     res.json(openaiResponse);
 
   } catch (error) {
     // Resposta de erro sempre no formato OpenAI, para nunca quebrar n8n/langchain
+    console.error('\n=== ERRO GERAL (catch externo) ===');
+    console.error(error);
+
     res.status(500).json({
       id: `chatcmpl-${uuidv4()}`,
       object: 'chat.completion',
