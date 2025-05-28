@@ -20,43 +20,33 @@ app.post('/v1/chat/completions', async (req, res) => {
   console.log('Headers:', JSON.stringify(req.headers, null, 2));
   console.log('Body:', JSON.stringify(req.body, null, 2));
 
+  let openaiRequest = req.body;
+  let chatbotUuid = '';
+  let apiToken = '';
+  let userQuery = '';
+  let userKey = '';
+  let customSystemPrompt = '';
+  let lastMessage = null;
+
   try {
-    const openaiRequest = req.body;
+    // Auth header parsing
     const authHeader = req.headers.authorization;
-
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
-      return res.status(401).json({
-        error: {
-          message: 'Authorization header missing or invalid',
-          type: 'authentication_error',
-          details: 'Expected format: Bearer TOKEN:UUID'
-        }
-      });
+      throw new Error('Authorization header missing or invalid');
     }
-
     const authData = authHeader.replace('Bearer ', '').trim();
-    const [apiToken, chatbotUuid] = authData.split(':');
-
+    [apiToken, chatbotUuid] = authData.split(':');
     const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
     if (!uuidRegex.test(chatbotUuid)) {
-      return res.status(400).json({
-        error: {
-          message: 'Invalid chatbot UUID format',
-          type: 'invalid_request_error',
-          details: `UUID deve estar no formato: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`
-        }
-      });
+      throw new Error('Invalid chatbot UUID format');
     }
 
+    // Parsing messages
     let messages = openaiRequest.messages || [];
-    let customSystemPrompt = '';
-    let userQuery = '';
-    let userKey = '';
-    let lastMessage = null;
-
     // Suporte a formato string (n8n) e OpenAI
     if (messages.length === 1 && typeof messages[0] === 'string') {
       const messageString = messages[0];
+      // System prompt via string
       const systemMatch = messageString.match(/System:\s*([\s\S]*?)(?=Contexto Extra|$)/);
       if (systemMatch) {
         customSystemPrompt = systemMatch[1].trim();
@@ -64,48 +54,37 @@ app.post('/v1/chat/completions', async (req, res) => {
       const contextoMatch = messageString.match(/Contexto Extra\s*Human:\s*([\s\S]*?)$/);
       if (contextoMatch) {
         const contextoContent = contextoMatch[1].trim();
+        // Query entre Query: e user_key:
         const queryMatch = contextoContent.match(/Query:\s*([\s\S]*?)\s*user_key:/i);
-        if (queryMatch) {
-          userQuery = queryMatch[1].trim();
-        }
+        if (queryMatch) userQuery = queryMatch[1].trim();
+        // user_key
         const userKeyMatch = contextoContent.match(/user_key:\s*([^\n\r]*)/i);
-        if (userKeyMatch) {
-          userKey = userKeyMatch[1].trim();
-        }
+        if (userKeyMatch) userKey = userKeyMatch[1].trim();
       }
       if (!userQuery) {
         const humanMatch = messageString.match(/Human:\s*([^\n\r]*)/);
-        if (humanMatch) {
-          userQuery = humanMatch[1].trim();
-        }
+        if (humanMatch) userQuery = humanMatch[1].trim();
       }
-      if (userQuery) {
-        lastMessage = { role: 'user', content: userQuery };
-      }
-    } else {
-      lastMessage = messages[messages.length - 1];
-      if (!userQuery && lastMessage?.content) {
-        userQuery = lastMessage.content.trim();
-      }
-      // Busca System Prompt do formato OpenAI
-      const systemMessage = messages.find(m => m.role === 'system');
-      if (systemMessage && systemMessage.content) {
-        customSystemPrompt = systemMessage.content.trim();
-      }
+      if (userQuery) lastMessage = { role: 'user', content: userQuery };
+    } else if (Array.isArray(messages)) {
+      // Formato OpenAI nativo
+      // System prompt (apenas para custom prompt)
+      const systemMessage = messages.find(
+        m => typeof m === 'object' && m.role === 'system' && m.content
+      );
+      if (systemMessage) customSystemPrompt = systemMessage.content.trim();
+      // Pega a última mensagem do usuário
+      const validMessages = messages.filter(m => typeof m === 'object' && m.content);
+      lastMessage = validMessages.length > 0 ? validMessages[validMessages.length - 1] : null;
+      if (lastMessage && lastMessage.content) userQuery = lastMessage.content.trim();
     }
 
-    // Query obrigatória
+    // Garante que a query do usuário exista
     if (!userQuery) {
-      return res.status(400).json({
-        error: {
-          message: 'No user message found',
-          type: 'invalid_request_error',
-          details: 'A user message (Query: or role: user) is required'
-        }
-      });
+      throw new Error('No user message found');
     }
 
-    // --- Aqui entra a lógica especial para user_key! ---
+    // Captura user_key do model, headers, fallback, etc
     const KNOWN_MODELS = ['gpt-3.5-turbo', 'gpt-4', 'gpt-4o', 'simplifique-default'];
     if (!userKey) {
       if (openaiRequest.model && !KNOWN_MODELS.includes(openaiRequest.model)) {
@@ -118,12 +97,12 @@ app.post('/v1/chat/completions', async (req, res) => {
       }
     }
 
+    // Prepara payload Simplifique.ai
     const simplifiqueRequest = {
       chatbot_uuid: chatbotUuid,
       query: userQuery,
       user_key: userKey
     };
-
     if (customSystemPrompt && customSystemPrompt.trim()) {
       simplifiqueRequest.custom_base_system_prompt = customSystemPrompt;
     }
@@ -131,6 +110,8 @@ app.post('/v1/chat/completions', async (req, res) => {
     console.log('\n=== Enviando para Simplifique.ai ===');
     console.log('Payload:', JSON.stringify(simplifiqueRequest, null, 2));
 
+    // Chama Simplifique
+    let simplifiqueData;
     try {
       const simplifiqueResponse = await axios.post(
         `${SIMPLIFIQUE_BASE_URL}/message/`,
@@ -144,74 +125,78 @@ app.post('/v1/chat/completions', async (req, res) => {
           timeout: 30000
         }
       );
-
-      const simplifiqueData = simplifiqueResponse.data;
-      const promptTokens = lastMessage?.content
-        ? Math.ceil(lastMessage.content.length / 4)
-        : Math.ceil(userQuery.length / 4);
-      const completionTokens = Math.ceil(simplifiqueData.data.answer.length / 4);
-      const totalTokens = promptTokens + completionTokens;
-
-      const openaiResponse = {
-        id: `chatcmpl-${uuidv4()}`,
-        object: 'chat.completion',
-        created: Math.floor(Date.now() / 1000),
-        model: openaiRequest.model || 'gpt-3.5-turbo',
-        system_fingerprint: `simplifique_${chatbotUuid}`,
-        choices: [{
-          index: 0,
-          message: {
-            role: 'assistant',
-            content: simplifiqueData.data.answer
-          },
-          logprobs: null,
-          finish_reason: 'stop'
-        }],
-        usage: {
-          prompt_tokens: promptTokens,
-          completion_tokens: completionTokens,
-          total_tokens: totalTokens
-        },
-        metadata: {
-          simplifique_chat_id: simplifiqueData.data.chat_id,
-          service: 'simplifique.ai'
+      simplifiqueData = simplifiqueResponse.data;
+    } catch (err) {
+      // Se erro no simplifique, retorna erro "humano" para n8n
+      simplifiqueData = {
+        data: {
+          answer: 'Desculpe, não foi possível obter uma resposta do chatbot agora.',
+          chat_id: null
         }
       };
-
-      res.json(openaiResponse);
-    } catch (axiosError) {
-      throw axiosError;
     }
+
+    // Garante tokens estimados (safe fallback)
+    const promptTokens = lastMessage?.content
+      ? Math.ceil(lastMessage.content.length / 4)
+      : Math.ceil(userQuery.length / 4);
+    const completionTokens = simplifiqueData?.data?.answer
+      ? Math.ceil(simplifiqueData.data.answer.length / 4)
+      : 0;
+    const totalTokens = promptTokens + completionTokens;
+
+    // Resposta no formato OpenAI
+    const openaiResponse = {
+      id: `chatcmpl-${uuidv4()}`,
+      object: 'chat.completion',
+      created: Math.floor(Date.now() / 1000),
+      model: openaiRequest.model || 'gpt-3.5-turbo',
+      system_fingerprint: `simplifique_${chatbotUuid}`,
+      choices: [{
+        index: 0,
+        message: {
+          role: 'assistant',
+          content: simplifiqueData?.data?.answer || 'Desculpe, não consegui obter uma resposta no momento.'
+        },
+        logprobs: null,
+        finish_reason: 'stop'
+      }],
+      usage: {
+        prompt_tokens: promptTokens,
+        completion_tokens: completionTokens,
+        total_tokens: totalTokens
+      },
+      metadata: {
+        simplifique_chat_id: simplifiqueData?.data?.chat_id,
+        service: 'simplifique.ai'
+      }
+    };
+
+    res.json(openaiResponse);
 
   } catch (error) {
-    if (error.response) {
-      const status = error.response.status;
-      const errorData = error.response.data;
-
-      if (status === 401) {
-        return res.status(401).json({
-          error: {
-            message: errorData.detail || 'Invalid API token',
-            type: 'authentication_error'
-          }
-        });
-      }
-      if (status === 400) {
-        return res.status(400).json({
-          error: {
-            message: errorData.message || 'Invalid request parameters',
-            type: 'invalid_request_error',
-            details: errorData.errors
-          }
-        });
-      }
-    }
-
+    // Resposta de erro sempre no formato OpenAI, para nunca quebrar n8n/langchain
     res.status(500).json({
-      error: {
-        message: 'Internal server error',
-        type: 'api_error',
-        details: error.message
+      id: `chatcmpl-${uuidv4()}`,
+      object: 'chat.completion',
+      created: Math.floor(Date.now() / 1000),
+      model: openaiRequest?.model || 'gpt-3.5-turbo',
+      choices: [{
+        index: 0,
+        message: {
+          role: 'assistant',
+          content: `Desculpe, ocorreu um erro: ${error.message || 'erro inesperado.'}`
+        },
+        finish_reason: 'stop'
+      }],
+      usage: {
+        prompt_tokens: 0,
+        completion_tokens: 0,
+        total_tokens: 0
+      },
+      metadata: {
+        simplifique_chat_id: null,
+        service: 'simplifique.ai'
       }
     });
   }
